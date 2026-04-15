@@ -122,10 +122,10 @@ export async function POST(req: Request) {
     }
 
     const lineItemDescs = bill.lineItems.map((li) => li.description);
-    // For a per-invoice Slack message, use only the single best match.
-    // Multi-match (Partnerlog → many shows) was causing noisy messages.
-    const allMatches = findMatchesForBill(bill.vendor, lineItemDescs, podscaleRows);
-    const matches = allMatches.slice(0, 1);
+    // Keep every show matched across the vendor name + line items so invoices
+    // with several shows (e.g. a Dear Media invoice covering 3-4 podcasts) are
+    // all surfaced in Slack instead of silently collapsing to one.
+    const matches = findMatchesForBill(bill.vendor, lineItemDescs, podscaleRows);
 
     const runDate = new Date().toLocaleDateString("en-US", {
       month: "short", day: "numeric", year: "numeric",
