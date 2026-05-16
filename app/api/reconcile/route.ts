@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { runReconciliation } from "@/lib/reconcile";
 import { postReconciliationSummary } from "@/lib/slack";
 
-// Allow Vercel cron to call this (max 60s on hobby, 300s on pro)
-export const maxDuration = 60;
+// Reconcile sweeps the whole company-wide PENDING approval queue (~200
+// bills today), which paginates through Ramp serially before we can do
+// any matching work. 60s isn't enough; 300s is the Vercel default on Pro.
+export const maxDuration = 300;
 
 export async function GET(req: Request) {
   // Protect against unauthorized calls in production
