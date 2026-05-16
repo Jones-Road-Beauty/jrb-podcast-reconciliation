@@ -40,6 +40,27 @@ async function verifyWebhook(challenge: string): Promise<void> {
 
 export const maxDuration = 60;
 
+// Ramp's webhook payload shape varies across API versions. Walk every
+// reasonable location and return the first bill-id-shaped string we find.
+function extractBillId(payload: Record<string, unknown>): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const p = payload as any;
+  const candidates: unknown[] = [
+    p?.object?.resource_id,    // older shape: { type, object: { resource_id } }
+    p?.data?.id,               // newer shape: { event_type, data: { id } }
+    p?.data?.bill_id,
+    p?.data?.resource_id,
+    p?.bill?.id,
+    p?.bill_id,
+    p?.resource_id,
+    p?.id,                     // last resort — some payloads use top-level id
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length > 0) return c;
+  }
+  return null;
+}
+
 // Verify Ramp HMAC-SHA256 signature
 async function verifySignature(rawBody: string, signature: string | null, secret: string): Promise<boolean> {
   if (!signature) return false;
@@ -82,8 +103,10 @@ export async function POST(req: Request) {
     await verifyWebhook(challenge);
     return NextResponse.json({ challenge });
   }
-  // Log full payload type for debugging
-  console.log("[webhook] event type:", payload.type, "keys:", Object.keys(payload).join(","));
+
+  // Log the full payload (truncated) so we can inspect the actual Ramp schema
+  const bodyForLog = rawBody.length > 2000 ? rawBody.slice(0, 2000) + "...[truncated]" : rawBody;
+  console.log("[webhook] keys:", Object.keys(payload).join(","), "body:", bodyForLog);
 
   // Verify signature for all real events (not challenge handshakes)
   const webhookSecret = process.env.RAMP_WEBHOOK_SECRET;
@@ -96,15 +119,20 @@ export async function POST(req: Request) {
     }
   }
 
-  const eventType = payload.type as string;
-  if (eventType !== "bills.created") {
-    // Acknowledge but ignore other event types
-    return NextResponse.json({ ok: true, ignored: true });
+  // Ramp has shipped a few different webhook payload shapes; check all known ones.
+  // Always return 200 — if we 4xx, Ramp marks the delivery as failed and may
+  // disable the webhook after repeated failures.
+  const eventType = (payload.type ?? payload.event_type ?? payload.event) as string | undefined;
+  if (eventType && !eventType.startsWith("bills.created")) {
+    console.log(`[webhook] ignoring event type: ${eventType}`);
+    return NextResponse.json({ ok: true, ignored: true, eventType });
   }
 
-  const billId = (payload.object as Record<string, string>)?.resource_id;
+  const billId = extractBillId(payload);
   if (!billId) {
-    return NextResponse.json({ error: "Missing resource_id" }, { status: 400 });
+    console.error("[webhook] could not extract bill id from payload — see body above");
+    // 200 so Ramp doesn't disable the webhook; we'll diagnose from logs.
+    return NextResponse.json({ ok: false, error: "Missing bill id", payloadKeys: Object.keys(payload) });
   }
 
   console.log(`[webhook] bills.created — billId: ${billId}`);
