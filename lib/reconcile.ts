@@ -63,10 +63,17 @@ export async function runReconciliation(): Promise<ReconciliationResult[]> {
     getPodscaleRows(),
   ]);
 
+  // Fetch every invoice URL in parallel — the serial version was the main
+  // reason a 20-bill queue hit the 60s function timeout.
+  const invoiceUrls = await Promise.all(
+    bills.map((b) => getBillInvoiceUrl(b.id).catch(() => null))
+  );
+
   const results: ReconciliationResult[] = [];
 
-  for (const bill of bills) {
-    const invoiceUrl = await getBillInvoiceUrl(bill.id);
+  for (let i = 0; i < bills.length; i++) {
+    const bill = bills[i];
+    const invoiceUrl = invoiceUrls[i];
     const lineItemDescs = bill.lineItems.map((li) => li.description);
     const matches = findMatchesForBill(bill.vendor, lineItemDescs, podscaleRows);
 
