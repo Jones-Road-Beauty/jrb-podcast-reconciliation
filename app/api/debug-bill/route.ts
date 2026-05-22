@@ -21,6 +21,22 @@ export async function GET(req: Request) {
     return NextResponse.json({ mode: "byId", billId, raw });
   }
 
+  const networkQuery = url.searchParams.get("network");
+  if (networkQuery) {
+    const { getPodscaleRows } = await import("@/lib/sheets");
+    const rows = await getPodscaleRows();
+    const nq = networkQuery.toLowerCase();
+    const matches = rows.filter(
+      (r) => r.network && r.network.toLowerCase().includes(nq)
+    );
+    return NextResponse.json({
+      mode: "network",
+      query: networkQuery,
+      count: matches.length,
+      rows: matches,
+    });
+  }
+
   // List pending bills, filter by vendor substring
   const listRes = await fetch(`${RAMP_API_BASE}/bills?approval_status=PENDING&limit=50`, {
     headers,
