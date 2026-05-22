@@ -127,6 +127,28 @@ export function findMatch(
   return null;
 }
 
+// Return every Podscale row whose network field matches the query (vendor name).
+// Used for "network bundle" reconciliation — many vendors (Amplitude Media
+// Partners, Dear Media, etc.) bill one lump sum that covers multiple shows
+// they represent, with the per-show breakdown only present on the invoice PDF.
+// We can still validate spend by summing expected spend across the network's
+// shows that aired in the billing month.
+export function findAllNetworkShows(query: string, rows: PodscaleRow[]): PodscaleRow[] {
+  if (!query.trim()) return [];
+  const q = normalize(query);
+  const qStripped = normalize(stripSuffixes(query));
+
+  return rows.filter((r) => {
+    if (!r.network) return false;
+    const net = normalize(r.network);
+    const netStripped = normalize(stripSuffixes(r.network));
+    if (net === q || net === qStripped || netStripped === q || netStripped === qStripped) {
+      return true;
+    }
+    return aliasMatch(q, net) || aliasMatch(qStripped, net);
+  });
+}
+
 // For a bill with multiple line items, try matching each line item description
 // and also the vendor name. Return all unique matches found.
 export function findMatchesForBill(
