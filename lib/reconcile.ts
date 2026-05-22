@@ -2,7 +2,7 @@
 
 import { getBillsForApproval, getBillInvoiceUrl, type RampBill } from "./ramp";
 import { getPodscaleRows, type PodscaleRow } from "./sheets";
-import { findMatchesForBill } from "./matcher";
+import { findMatch, findMatchesForBill } from "./matcher";
 
 export type ReconciliationStatus = "APPROVE" | "FLAG" | "UNMATCHED";
 
@@ -57,6 +57,74 @@ function reconcileBillAgainstRow(
   };
 }
 
+// Reconcile a single bill into one or more ReconciliationResult rows.
+// When a bill has 2+ line items each with their own dollar amount (e.g. an
+// Amplitude invoice covering "Were You Raised by Wolves?" $450 + another show
+// $360 = $810 total), we match each line item independently and check spend
+// against the line item amount — not the invoice total. The previous logic
+// either compared the full invoice total to one show's expected spend, or
+// evenly split the total across matched rows, both of which produced false
+// "Spend mismatch" alerts.
+export function reconcileBill(
+  bill: RampBill,
+  invoiceUrl: string | null,
+  podscaleRows: PodscaleRow[]
+): ReconciliationResult[] {
+  const lineItemsWithAmount = bill.lineItems.filter((li) => li.amount > 0);
+
+  if (lineItemsWithAmount.length >= 2) {
+    return lineItemsWithAmount.map((li) => {
+      const m = findMatch(li.description, podscaleRows);
+      const vendorLabel = `${bill.vendor} — ${li.description}`.trim();
+      const syntheticBill: RampBill = { ...bill, totalAmount: li.amount };
+      if (m) {
+        const r = reconcileBillAgainstRow(
+          syntheticBill,
+          m.row,
+          invoiceUrl,
+          m.score,
+          m.matchedOn
+        );
+        return { ...r, billVendor: vendorLabel };
+      }
+      return {
+        status: "UNMATCHED",
+        billId: bill.id,
+        billVendor: vendorLabel,
+        billAmount: li.amount,
+        billInvoiceUrl: invoiceUrl,
+        matchedRow: null,
+        checks: { aired: false, podscaleApproved: false, spendMatches: false },
+        matchScore: null,
+        matchedOn: null,
+      };
+    });
+  }
+
+  // Single-line or no-line bill: legacy vendor + descriptions matching against
+  // the full bill total. This is the common path (most invoices = one show).
+  const lineItemDescs = bill.lineItems.map((li) => li.description);
+  const matches = findMatchesForBill(bill.vendor, lineItemDescs, podscaleRows);
+
+  if (matches.length === 0) {
+    return [{
+      status: "UNMATCHED",
+      billId: bill.id,
+      billVendor: bill.vendor,
+      billAmount: bill.totalAmount,
+      billInvoiceUrl: invoiceUrl,
+      matchedRow: null,
+      checks: { aired: false, podscaleApproved: false, spendMatches: false },
+      matchScore: null,
+      matchedOn: null,
+    }];
+  }
+
+  return matches.map((m) =>
+    reconcileBillAgainstRow(bill, m.row, invoiceUrl, m.score, m.matchedOn)
+  );
+}
+
 export async function runReconciliation(): Promise<ReconciliationResult[]> {
   const [bills, podscaleRows] = await Promise.all([
     getBillsForApproval(),
@@ -70,43 +138,8 @@ export async function runReconciliation(): Promise<ReconciliationResult[]> {
   );
 
   const results: ReconciliationResult[] = [];
-
   for (let i = 0; i < bills.length; i++) {
-    const bill = bills[i];
-    const invoiceUrl = invoiceUrls[i];
-    const lineItemDescs = bill.lineItems.map((li) => li.description);
-    const matches = findMatchesForBill(bill.vendor, lineItemDescs, podscaleRows);
-
-    if (matches.length === 0) {
-      // No match found
-      results.push({
-        status: "UNMATCHED",
-        billId: bill.id,
-        billVendor: bill.vendor,
-        billAmount: bill.totalAmount,
-        billInvoiceUrl: invoiceUrl,
-        matchedRow: null,
-        checks: { aired: false, podscaleApproved: false, spendMatches: false },
-        matchScore: null,
-        matchedOn: null,
-      });
-    } else if (matches.length === 1) {
-      // Single show matched
-      const m = matches[0];
-      results.push(
-        reconcileBillAgainstRow(bill, m.row, invoiceUrl, m.score, m.matchedOn)
-      );
-    } else {
-      // Multi-show invoice — validate each matched show row separately
-      // For spend check, split bill amount evenly across matched rows
-      const splitAmount = bill.totalAmount / matches.length;
-      for (const m of matches) {
-        const syntheticBill: RampBill = { ...bill, totalAmount: splitAmount };
-        results.push(
-          reconcileBillAgainstRow(syntheticBill, m.row, invoiceUrl, m.score, m.matchedOn)
-        );
-      }
-    }
+    results.push(...reconcileBill(bills[i], invoiceUrls[i], podscaleRows));
   }
 
   // Sort: APPROVE first, then FLAG, then UNMATCHED

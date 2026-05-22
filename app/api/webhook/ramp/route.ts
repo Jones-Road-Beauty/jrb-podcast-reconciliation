@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { getBillById, getAccessTokenPublic } from "@/lib/ramp";
+import { getBillById, getBillInvoiceUrl, getAccessTokenPublic } from "@/lib/ramp";
 import { getPodscaleRows } from "@/lib/sheets";
-import { findMatchesForBill } from "@/lib/matcher";
+import { reconcileBill } from "@/lib/reconcile";
 import { postSingleBillResult } from "@/lib/slack";
 
 const RAMP_API_BASE = "https://api.ramp.com/developer/v1";
@@ -149,20 +149,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, skipped: "bill not found" });
     }
 
-    const lineItemDescs = bill.lineItems.map((li) => li.description);
-    // Keep every show matched across the vendor name + line items so invoices
-    // with several shows (e.g. a Dear Media invoice covering 3-4 podcasts) are
-    // all surfaced in Slack instead of silently collapsing to one.
-    const matches = findMatchesForBill(bill.vendor, lineItemDescs, podscaleRows);
+    const invoiceUrl = await getBillInvoiceUrl(bill.id).catch(() => null);
+    // Multi-show invoices (e.g. Amplitude billing $450 Wolves + $360 Brooke
+    // Ashley = $810 total) are reconciled per line item so spend checks
+    // compare each show against its own line item amount, not the invoice total.
+    const results = reconcileBill(bill, invoiceUrl, podscaleRows);
 
     const runDate = new Date().toLocaleDateString("en-US", {
       month: "short", day: "numeric", year: "numeric",
       timeZone: "America/New_York",
     });
 
-    await postSingleBillResult(bill, matches, podscaleRows, runDate);
+    await postSingleBillResult(bill, results, runDate);
 
-    return NextResponse.json({ ok: true, billId, matchCount: matches.length });
+    return NextResponse.json({ ok: true, billId, resultCount: results.length });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[webhook] Error:", message);

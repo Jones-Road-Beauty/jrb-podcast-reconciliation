@@ -2,8 +2,6 @@
 import { IncomingWebhook } from "@slack/webhook";
 import type { ReconciliationResult } from "./reconcile";
 import type { RampBill } from "./ramp";
-import type { PodscaleRow } from "./sheets";
-import type { MatchResult } from "./matcher";
 
 function getWebhook(): IncomingWebhook {
   const url = process.env.SLACK_WEBHOOK_URL;
@@ -61,7 +59,7 @@ export async function postReconciliationSummary(
         lines.push(`    ↳ ❌ Not marked as Podscale-approved (Col S is not TRUE)`);
       if (!r.checks.spendMatches && r.matchedRow?.expectedSpend != null) {
         lines.push(
-          `    ↳ ❌ Spend mismatch: invoice ${formatDollars(r.billAmount)} vs expected ${formatDollars(r.matchedRow.expectedSpend)}`
+          `    ↳ ❌ Spend mismatch: ${formatDollars(r.billAmount)} vs expected ${formatDollars(r.matchedRow.expectedSpend)}`
         );
       }
       if (r.billInvoiceUrl) lines.push(`    ↳ 🔗 <${r.billInvoiceUrl}|View invoice>`);
@@ -103,41 +101,33 @@ export async function postReconciliationSummary(
   await webhook.send({ text: lines.join("\n") });
 }
 
-// Single-bill message posted via the Ramp webhook
+// Single-bill message posted via the Ramp webhook.
+// `results` is the output of `reconcileBill(bill, ...)` — one row per matched
+// line item (multi-show invoice) or one row per matched show (single-line bill).
+// Each result already carries the correct per-line-item or full-invoice amount,
+// so we just render whatever spend value is on the result.
 export async function postSingleBillResult(
   bill: RampBill,
-  matches: MatchResult[],
-  _rows: PodscaleRow[],
+  results: ReconciliationResult[],
   runDate: string
 ): Promise<void> {
   const webhook = getWebhook();
   const lines: string[] = [];
 
-  if (matches.length === 0) {
+  const allUnmatched = results.every((r) => r.status === "UNMATCHED");
+
+  if (results.length === 0 || allUnmatched) {
     lines.push(`*🎙️ New podcast invoice — ${runDate}*`);
     lines.push(`*"${bill.vendor}"* — ${formatDollars(bill.totalAmount)}`);
     lines.push("");
     lines.push("❓ No matching row found in the Podscale sheet.");
     lines.push("_Check the Master tab manually before approving._");
+    if (bill.invoiceUrl) {
+      lines.push("");
+      lines.push(`🔗 <${bill.invoiceUrl}|View invoice>`);
+    }
   } else {
-    const SPEND_TOLERANCE = 0.5;
-    const splitAmount = bill.totalAmount / matches.length;
-
-    // Determine overall status across all matches
-    const allChecks = matches.map((m) => {
-      const aired = !!m.row.airedDate;
-      const podscaleApproved = m.row.podscaleApproved;
-      const spendMatches =
-        m.row.expectedSpend === null
-          ? true
-          : Math.abs(splitAmount - m.row.expectedSpend) <= SPEND_TOLERANCE;
-      return { aired, podscaleApproved, spendMatches, row: m.row };
-    });
-
-    const allPass = allChecks.every(
-      (c) => c.aired && c.podscaleApproved && c.spendMatches
-    );
-
+    const allPass = results.every((r) => r.status === "APPROVE");
     const emoji = allPass ? "✅" : "⚠️";
     const statusLabel = allPass ? "Ready to approve" : "Needs review";
 
@@ -146,19 +136,26 @@ export async function postSingleBillResult(
     lines.push(`*${bill.vendor}* — ${formatDollars(bill.totalAmount)}`);
     lines.push("");
 
-    for (const { aired, podscaleApproved, spendMatches, row } of allChecks) {
-      const label = `${row.showName}${row.network ? ` / ${row.network}` : ""}`;
-      lines.push(`  • *${label}*`);
-      if (!aired) lines.push(`    ↳ ❌ Not marked as aired yet (Col R blank)`);
-      if (!podscaleApproved) lines.push(`    ↳ ❌ Not Podscale-approved (Col S not TRUE)`);
-      if (!spendMatches && row.expectedSpend != null) {
+    for (const r of results) {
+      const label = r.matchedRow
+        ? `${r.matchedRow.showName}${r.matchedRow.network ? ` / ${r.matchedRow.network}` : ""}`
+        : r.billVendor;
+      lines.push(`  • *${label}* — ${formatDollars(r.billAmount)}`);
+      if (r.status === "UNMATCHED") {
+        lines.push(`    ↳ ❓ No matching row found in the Podscale sheet`);
+        continue;
+      }
+      if (!r.checks.aired) lines.push(`    ↳ ❌ Not marked as aired yet (Col R blank)`);
+      if (!r.checks.podscaleApproved)
+        lines.push(`    ↳ ❌ Not Podscale-approved (Col S not TRUE)`);
+      if (!r.checks.spendMatches && r.matchedRow?.expectedSpend != null) {
         lines.push(
-          `    ↳ ❌ Spend mismatch: invoice ${formatDollars(splitAmount)} vs expected ${formatDollars(row.expectedSpend)}`
+          `    ↳ ❌ Spend mismatch: line item ${formatDollars(r.billAmount)} vs expected ${formatDollars(r.matchedRow.expectedSpend)}`
         );
       }
-      if (allPass) {
+      if (r.status === "APPROVE") {
         lines.push(
-          `    ↳ ${checkMark(aired)} aired  ${checkMark(podscaleApproved)} Podscale  ${checkMark(spendMatches)} spend`
+          `    ↳ ${checkMark(r.checks.aired)} aired  ${checkMark(r.checks.podscaleApproved)} Podscale  ${checkMark(r.checks.spendMatches)} spend`
         );
       }
     }
