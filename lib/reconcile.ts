@@ -2,7 +2,24 @@
 
 import { getBillsForApproval, getBillInvoiceUrl, type RampBill } from "./ramp";
 import { getPodscaleRows, type PodscaleRow } from "./sheets";
-import { findMatch, findMatchesForBill, findAllNetworkShows } from "./matcher";
+import { findMatch, findMatchesForBill, findAllNetworkShows, isPodcastVendor } from "./matcher";
+
+// Ramp's API returns the entire company-wide PENDING queue (~170 bills across
+// ~110 vendors — packaging, insurance, photographers, etc.) and exposes no
+// "awaiting my approval" filter, so we scope the sweep ourselves:
+//   1. vendor must confidently map to a Podscale show/network (podcast bill), and
+//   2. the invoice must be from the current billing cycle (issued recently).
+// Together these reproduce the handful of podcast invoices actually outstanding
+// in Bill Pay instead of the whole backlog.
+const CYCLE_DAYS = 45;
+
+function isCurrentCycle(bill: RampBill, now: number): boolean {
+  if (!bill.issuedAt) return true; // no date → don't exclude, let it surface
+  const issued = new Date(bill.issuedAt).getTime();
+  if (isNaN(issued)) return true;
+  const ageDays = (now - issued) / (1000 * 60 * 60 * 24);
+  return ageDays <= CYCLE_DAYS;
+}
 
 export type ReconciliationStatus = "APPROVE" | "FLAG" | "UNMATCHED";
 
@@ -217,10 +234,16 @@ export function reconcileBill(
 }
 
 export async function runReconciliation(): Promise<ReconciliationResult[]> {
-  const [bills, podscaleRows] = await Promise.all([
+  const [allBills, podscaleRows] = await Promise.all([
     getBillsForApproval(),
     getPodscaleRows(),
   ]);
+
+  // Scope the company-wide PENDING queue down to current-cycle podcast bills.
+  const now = Date.now();
+  const bills = allBills.filter(
+    (b) => isPodcastVendor(b.vendor, podscaleRows) && isCurrentCycle(b, now)
+  );
 
   // Fetch every invoice URL in parallel — the serial version was the main
   // reason a 20-bill queue hit the 60s function timeout.

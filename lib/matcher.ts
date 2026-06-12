@@ -127,6 +127,23 @@ export function findMatch(
   return null;
 }
 
+// Gate used to decide whether a Ramp bill is even podcast-related before we
+// bother reconciling it. The reconciliation sweep pulls the WHOLE company-wide
+// PENDING queue (packaging, insurance, photographers, models, etc.), so we must
+// only keep bills whose vendor confidently maps to a Podscale show/network.
+//
+// This is intentionally STRICTER than findMatch's 0.4 fuzzy threshold: a loose
+// fuzzy hit is exactly what produced dozens of false "matches" in Slack. We
+// accept only exact/alias matches or a tight fuzzy match.
+const PODCAST_VENDOR_THRESHOLD = 0.2;
+
+export function isPodcastVendor(vendor: string, rows: PodscaleRow[]): boolean {
+  const m = findMatch(vendor, rows);
+  if (!m) return false;
+  if (m.method === "exact") return true; // exact show/network or known alias
+  return m.score <= PODCAST_VENDOR_THRESHOLD;
+}
+
 // Return every Podscale row whose network field matches the query (vendor name).
 // Used for "network bundle" reconciliation — many vendors (Amplitude Media
 // Partners, Dear Media, etc.) bill one lump sum that covers multiple shows
