@@ -17,6 +17,22 @@ export async function GET(req: Request) {
     }
   }
 
+  // TEMPORARY: ?dump=bills returns raw status fields for every PENDING bill,
+  // grouped by approval_status + payment_status, to diagnose queue-size mismatch.
+  if (new URL(req.url).searchParams.get("dump") === "bills") {
+    const { getBillsDebugInfo } = await import("@/lib/ramp");
+    const bills = (await getBillsDebugInfo()) as Array<Record<string, unknown>>;
+    const byApproval: Record<string, number> = {};
+    const byPayment: Record<string, number> = {};
+    for (const b of bills) {
+      const a = String(b.approval_status);
+      const p = String(b.payment_status);
+      byApproval[a] = (byApproval[a] ?? 0) + 1;
+      byPayment[p] = (byPayment[p] ?? 0) + 1;
+    }
+    return NextResponse.json({ total: bills.length, byApproval, byPayment, bills });
+  }
+
   // ?diag=1 runs step-by-step with per-step errors for debugging
   const diag = new URL(req.url).searchParams.get("diag") === "1";
   if (diag) {

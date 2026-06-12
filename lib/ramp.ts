@@ -101,6 +101,37 @@ export async function getBillsForApproval(): Promise<RampBill[]> {
   return bills;
 }
 
+// TEMPORARY DEBUG — returns raw status fields for every PENDING bill so we can
+// see why the company-wide PENDING queue (~170) is far larger than the handful
+// actually awaiting approval in Bill Pay. Remove after diagnosis.
+export async function getBillsDebugInfo(): Promise<unknown[]> {
+  const out: unknown[] = [];
+  let cursor: string | null = null;
+  do {
+    const params = new URLSearchParams({ approval_status: "PENDING", limit: "50" });
+    if (cursor) params.set("start", cursor);
+    const res = await fetch(`${RAMP_API_BASE}/bills?${params}`, { headers: await authHeaders() });
+    if (!res.ok) throw new Error(`Ramp API error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const raw of (data.data ?? []) as any[]) {
+      out.push({
+        vendor: raw.vendor_name ?? raw.vendor?.name ?? null,
+        amount: parseAmount(raw.amount ?? raw.total_amount),
+        approval_status: raw.approval_status ?? null,
+        payment_status: raw.payment_status ?? null,
+        status: raw.status ?? null,
+        due_date: raw.due_date ?? null,
+        issued_at: raw.issued_at ?? raw.created_at ?? null,
+        entity: raw.entity?.name ?? raw.entity_name ?? null,
+      });
+    }
+    const nextUrl = data.page?.next ?? null;
+    cursor = nextUrl ? new URL(nextUrl).searchParams.get("start") : null;
+  } while (cursor);
+  return out;
+}
+
 export async function getBillById(billId: string): Promise<RampBill | null> {
   const res = await fetch(`${RAMP_API_BASE}/bills/${billId}`, {
     headers: await authHeaders(),
