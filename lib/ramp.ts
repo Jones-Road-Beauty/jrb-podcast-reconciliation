@@ -135,6 +135,8 @@ export async function getBillsDebugInfo(): Promise<unknown[]> {
         entity: raw.entity?.name ?? raw.entity_name ?? null,
         bill_categories: catNames(raw.accounting_field_selections),
         line_categories: Array.from(new Set(lineCats)),
+        // verbatim selections from the first line item, to see real values
+        raw_selections: raw.line_items?.[0]?.accounting_field_selections ?? raw.accounting_field_selections ?? null,
       });
     }
     const nextUrl = data.page?.next ?? null;
