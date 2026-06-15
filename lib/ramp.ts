@@ -17,8 +17,27 @@ export interface RampBill {
   issuedAt: string | null; // when the invoice was issued — used for cycle filtering
   totalAmount: number; // in dollars
   lineItems: RampLineItem[];
+  glCodes: string[]; // GL account external codes (e.g. "6513" = Podcast) on bill + line items
   approvalStatus: string;
   invoiceUrl: string | null;
+}
+
+// Collect the GL-account external codes coded on a bill (NetSuite GL accounts
+// live in accounting_field_selections, both at bill level and per line item).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractGlCodes(raw: any): string[] {
+  const codes = new Set<string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const collect = (sels: any[]) =>
+    (sels ?? []).forEach((s) => {
+      if (s?.category_info?.type === "GL_ACCOUNT" && s?.external_code) {
+        codes.add(String(s.external_code));
+      }
+    });
+  collect(raw.accounting_field_selections);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (raw.line_items ?? []).forEach((li: any) => collect(li.accounting_field_selections));
+  return [...codes];
 }
 
 // Simple in-memory token cache (valid for duration of one function invocation)
@@ -102,49 +121,6 @@ export async function getBillsForApproval(): Promise<RampBill[]> {
   return bills;
 }
 
-// TEMPORARY DEBUG — capture accounting categories + owner for every PENDING
-// bill so we can find what the bills in Whitney's approval queue have in common
-// (the API exposes no approver field). Remove after diagnosis.
-export async function getBillsDebugInfo(): Promise<unknown[]> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const catNames = (sels: any[]): string[] =>
-    (sels ?? []).map((s) => {
-      const t = s?.category_info?.type ?? s?.provider_name ?? "?";
-      const n = s?.category_info?.name ?? s?.display_name ?? s?.name ?? s?.external_code ?? "?";
-      return `${t}:${n}`;
-    });
-
-  const out: unknown[] = [];
-  let cursor: string | null = null;
-  do {
-    const params = new URLSearchParams({ approval_status: "PENDING", limit: "50" });
-    if (cursor) params.set("start", cursor);
-    const res = await fetch(`${RAMP_API_BASE}/bills?${params}`, { headers: await authHeaders() });
-    if (!res.ok) throw new Error(`Ramp API error ${res.status}: ${await res.text()}`);
-    const data = await res.json();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const raw of (data.data ?? []) as any[]) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const lineCats = (raw.line_items ?? []).flatMap((li: any) => catNames(li.accounting_field_selections));
-      out.push({
-        vendor: raw.vendor_name ?? raw.vendor?.name ?? null,
-        amount: parseAmount(raw.amount ?? raw.total_amount),
-        issued_at: raw.issued_at ?? raw.invoice_date ?? raw.created_at ?? null,
-        approval_status: raw.approval_status ?? null,
-        owner: raw.bill_owner ? `${raw.bill_owner.first_name ?? ""} ${raw.bill_owner.last_name ?? ""}`.trim() : null,
-        entity: raw.entity?.name ?? raw.entity_name ?? null,
-        bill_categories: catNames(raw.accounting_field_selections),
-        line_categories: Array.from(new Set(lineCats)),
-        // verbatim selections from the first line item, to see real values
-        raw_selections: raw.line_items?.[0]?.accounting_field_selections ?? raw.accounting_field_selections ?? null,
-      });
-    }
-    const nextUrl = data.page?.next ?? null;
-    cursor = nextUrl ? new URL(nextUrl).searchParams.get("start") : null;
-  } while (cursor);
-  return out;
-}
-
 export async function getBillById(billId: string): Promise<RampBill | null> {
   const res = await fetch(`${RAMP_API_BASE}/bills/${billId}`, {
     headers: await authHeaders(),
@@ -191,6 +167,7 @@ function normalizeBill(raw: any): RampBill {
         amount: parseAmount(li.amount),
       })
     ),
+    glCodes: extractGlCodes(raw),
     approvalStatus: raw.approval_status ?? raw.payment_status ?? "UNKNOWN",
     invoiceUrl: null,
   };

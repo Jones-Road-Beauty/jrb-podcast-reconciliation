@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { getBillById, getBillInvoiceUrl, getAccessTokenPublic } from "@/lib/ramp";
 import { getPodscaleRows } from "@/lib/sheets";
-import { reconcileBill } from "@/lib/reconcile";
-import { isPodcastVendor } from "@/lib/matcher";
+import { reconcileBill, isPodcastBill } from "@/lib/reconcile";
 import { postSingleBillResult } from "@/lib/slack";
 
 const RAMP_API_BASE = "https://api.ramp.com/developer/v1";
@@ -151,11 +150,11 @@ export async function POST(req: Request) {
     }
 
     // Skip non-podcast bills silently — the webhook fires for every Ramp bill,
-    // but this Flow only cares about podcast vendors. Without this gate, a
-    // packaging/insurance/photographer invoice would post a "no match" message.
-    if (!isPodcastVendor(bill.vendor, podscaleRows)) {
-      console.log(`[webhook] skipping non-podcast vendor: ${bill.vendor}`);
-      return NextResponse.json({ ok: true, skipped: "not a podcast vendor", vendor: bill.vendor });
+    // but this Flow only cares about podcast bills (GL 6513). Without this gate,
+    // a packaging/insurance/photographer invoice would post a "no match" message.
+    if (!isPodcastBill(bill)) {
+      console.log(`[webhook] skipping non-podcast bill: ${bill.vendor} (gl: ${bill.glCodes.join(",") || "none"})`);
+      return NextResponse.json({ ok: true, skipped: "not a podcast bill", vendor: bill.vendor });
     }
 
     const invoiceUrl = await getBillInvoiceUrl(bill.id).catch(() => null);

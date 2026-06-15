@@ -2,16 +2,28 @@
 
 import { getBillsForApproval, getBillInvoiceUrl, type RampBill } from "./ramp";
 import { getPodscaleRows, type PodscaleRow } from "./sheets";
-import { findMatch, findMatchesForBill, findAllNetworkShows, isPodcastVendor } from "./matcher";
+import { findMatch, findMatchesForBill, findAllNetworkShows } from "./matcher";
 
 // Ramp's API returns the entire company-wide PENDING queue (~170 bills across
 // ~110 vendors — packaging, insurance, photographers, etc.) and exposes no
 // "awaiting my approval" filter, so we scope the sweep ourselves:
-//   1. vendor must confidently map to a Podscale show/network (podcast bill), and
+//   1. the bill must be coded to the Podcast GL account (6513), and
 //   2. the invoice must be from the current billing cycle (issued recently).
-// Together these reproduce the handful of podcast invoices actually outstanding
-// in Bill Pay instead of the whole backlog.
+// The GL code is an exact, accountant-assigned "this is podcast advertising"
+// flag — far more reliable than fuzzy-matching vendor names against Podscale
+// (which produced false hits). Podscale matching is still used for VALIDATION
+// (aired / approved / spend), just not for deciding what's a podcast bill.
+//
+// NOTE: this surfaces ALL current-cycle podcast bills, not only the ones
+// awaiting Whitney's approval — Ramp's API has no approver field, so the
+// per-approver queue can't be reproduced. Use Ramp's native Slack approval
+// notifications for the "needs my approval" signal.
+const PODCAST_GL_CODE = "6513"; // Marketing : Digital Advertising : Podcast
 const CYCLE_DAYS = 45;
+
+export function isPodcastBill(bill: RampBill): boolean {
+  return bill.glCodes.includes(PODCAST_GL_CODE);
+}
 
 function isCurrentCycle(bill: RampBill, now: number): boolean {
   if (!bill.issuedAt) return true; // no date → don't exclude, let it surface
@@ -242,7 +254,7 @@ export async function runReconciliation(): Promise<ReconciliationResult[]> {
   // Scope the company-wide PENDING queue down to current-cycle podcast bills.
   const now = Date.now();
   const bills = allBills.filter(
-    (b) => isPodcastVendor(b.vendor, podscaleRows) && isCurrentCycle(b, now)
+    (b) => isPodcastBill(b) && isCurrentCycle(b, now)
   );
 
   // Fetch every invoice URL in parallel — the serial version was the main
