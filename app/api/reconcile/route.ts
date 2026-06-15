@@ -17,6 +17,14 @@ export async function GET(req: Request) {
     }
   }
 
+  // TEMPORARY: ?dump=bills returns accounting categories + owner for every
+  // PENDING bill, to find what Whitney's approval-queue bills have in common.
+  if (new URL(req.url).searchParams.get("dump") === "bills") {
+    const { getBillsDebugInfo } = await import("@/lib/ramp");
+    const bills = await getBillsDebugInfo();
+    return NextResponse.json({ total: bills.length, bills });
+  }
+
   // ?diag=1 runs step-by-step with per-step errors for debugging
   const diag = new URL(req.url).searchParams.get("diag") === "1";
   if (diag) {

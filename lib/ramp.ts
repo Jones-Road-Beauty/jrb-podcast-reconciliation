@@ -102,6 +102,47 @@ export async function getBillsForApproval(): Promise<RampBill[]> {
   return bills;
 }
 
+// TEMPORARY DEBUG — capture accounting categories + owner for every PENDING
+// bill so we can find what the bills in Whitney's approval queue have in common
+// (the API exposes no approver field). Remove after diagnosis.
+export async function getBillsDebugInfo(): Promise<unknown[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const catNames = (sels: any[]): string[] =>
+    (sels ?? []).map((s) => {
+      const t = s?.category_info?.type ?? s?.provider_name ?? "?";
+      const n = s?.category_info?.name ?? s?.display_name ?? s?.name ?? s?.external_code ?? "?";
+      return `${t}:${n}`;
+    });
+
+  const out: unknown[] = [];
+  let cursor: string | null = null;
+  do {
+    const params = new URLSearchParams({ approval_status: "PENDING", limit: "50" });
+    if (cursor) params.set("start", cursor);
+    const res = await fetch(`${RAMP_API_BASE}/bills?${params}`, { headers: await authHeaders() });
+    if (!res.ok) throw new Error(`Ramp API error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const raw of (data.data ?? []) as any[]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lineCats = (raw.line_items ?? []).flatMap((li: any) => catNames(li.accounting_field_selections));
+      out.push({
+        vendor: raw.vendor_name ?? raw.vendor?.name ?? null,
+        amount: parseAmount(raw.amount ?? raw.total_amount),
+        issued_at: raw.issued_at ?? raw.invoice_date ?? raw.created_at ?? null,
+        approval_status: raw.approval_status ?? null,
+        owner: raw.bill_owner ? `${raw.bill_owner.first_name ?? ""} ${raw.bill_owner.last_name ?? ""}`.trim() : null,
+        entity: raw.entity?.name ?? raw.entity_name ?? null,
+        bill_categories: catNames(raw.accounting_field_selections),
+        line_categories: Array.from(new Set(lineCats)),
+      });
+    }
+    const nextUrl = data.page?.next ?? null;
+    cursor = nextUrl ? new URL(nextUrl).searchParams.get("start") : null;
+  } while (cursor);
+  return out;
+}
+
 export async function getBillById(billId: string): Promise<RampBill | null> {
   const res = await fetch(`${RAMP_API_BASE}/bills/${billId}`, {
     headers: await authHeaders(),
