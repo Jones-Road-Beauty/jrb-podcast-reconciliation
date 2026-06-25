@@ -18,6 +18,7 @@ export interface RampBill {
   totalAmount: number; // in dollars
   lineItems: RampLineItem[];
   glCodes: string[]; // GL account external codes (e.g. "6513" = Podcast) on bill + line items
+  invoiceUrls: string[]; // invoice document URLs (from the bill's invoice_urls field)
   approvalStatus: string;
   invoiceUrl: string | null;
 }
@@ -168,6 +169,7 @@ function normalizeBill(raw: any): RampBill {
       })
     ),
     glCodes: extractGlCodes(raw),
+    invoiceUrls: Array.isArray(raw.invoice_urls) ? raw.invoice_urls.filter(Boolean) : [],
     approvalStatus: raw.approval_status ?? raw.payment_status ?? "UNKNOWN",
     invoiceUrl: null,
   };

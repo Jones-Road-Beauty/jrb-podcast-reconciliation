@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getBillsForApproval, getBillInvoiceUrl } from "@/lib/ramp";
+import { getBillsForApproval } from "@/lib/ramp";
 
 // Return the Ramp invoice-document URL(s) for pending bills matching a vendor.
 // Used by the podcast-queue-check skill to read the actual invoice PDF and pull
@@ -35,15 +35,13 @@ export async function GET(req: Request) {
     if (exact.length > 0) matches = exact;
   }
 
-  const results = await Promise.all(
-    matches.map(async (b) => ({
-      billId: b.id,
-      vendor: b.vendor,
-      amount: b.totalAmount,
-      invoiceDate: b.invoiceDate,
-      invoiceUrl: await getBillInvoiceUrl(b.id).catch(() => null),
-    }))
-  );
+  const results = matches.map((b) => ({
+    billId: b.id,
+    vendor: b.vendor,
+    amount: b.totalAmount,
+    invoiceDate: b.invoiceDate,
+    invoiceUrls: b.invoiceUrls,
+  }));
 
   return NextResponse.json({ vendor, amount, count: results.length, bills: results });
 }
